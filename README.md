@@ -64,6 +64,18 @@ hyrum --cache-folder ~/charms --target unit --filter scenario
 
 # Exit non-zero if any charm fails, times out, or hits a patcher error:
 hyrum --cache-folder ~/charms --target unit --fail-on-regression
+
+# Save results for later comparison (e.g. as a baseline before a change):
+hyrum --cache-folder ~/charms --target unit --save-results baseline.json
+
+# After making a change, save the new results:
+hyrum --cache-folder ~/charms --target unit --save-results current.json
+
+# Compare the two runs to see what regressed or improved:
+hyrum compare baseline.json current.json
+
+# Use compare as a CI gate: exit non-zero if any new failures or errors:
+hyrum compare --fail-on-regression baseline.json current.json
 ```
 
 Output statuses:
@@ -76,6 +88,24 @@ Output statuses:
 | `timeout`       | killed after `--timeout` seconds                                       |
 | `patcher_error` | the dependency swap could not be applied (distinct from a tox failure) |
 | `skipped`       | filtered out before the run (regex, ignore-list, no runnable target, …)|
+
+## Comparing runs
+
+`hyrum compare <baseline.json> <current.json>` shows a status-level diff
+between two saved result sets:
+
+| category        | meaning                                                            |
+|-----------------|--------------------------------------------------------------------|
+| new failures    | charm passed in the baseline run, fails now                        |
+| resolved        | charm failed in the baseline run, passes now                       |
+| new errors      | `patcher_error` or `timeout` not present in the baseline run       |
+| pass-rate delta | headline `±N%` with counts of new failures and resolved charms     |
+
+Add `--fail-on-regression` to exit non-zero on any new failures or new
+errors, making it suitable as a CI gate against a stored baseline.
+
+Note: log-output diff (comparing stderr/stdout between two runs on the same
+failing charm) is deferred until `--log-dir` support lands.
 
 ## Dependency-swap scope
 

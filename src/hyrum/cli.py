@@ -11,10 +11,12 @@ import sys
 import click
 import rich.logging
 
+from hyrum import compare as compare_mod
 from hyrum import config as config_loader
 from hyrum import enumerate as enum_mod
 from hyrum import filters as filt
 from hyrum import frameworks, patchers, pool, report, runners
+from hyrum import results as results_io
 from hyrum.runners import make_runner, tox
 
 logger = logging.getLogger('hyrum')
@@ -107,12 +109,13 @@ def _select_repos(
     return repos, skipped
 
 
-@click.command()
+@click.group(invoke_without_command=True)
+@click.pass_context
 @click.option(
     '--cache-folder',
-    required=True,
+    required=False,
     type=click.Path(exists=True, file_okay=False, path_type=pathlib.Path),
-    help='Folder containing pre-cloned charm repositories.',
+    help='Folder containing pre-cloned charm repositories. Required when no subcommand is given.',
 )
 @click.option(
     '-c',
@@ -126,8 +129,9 @@ def _select_repos(
 @click.option(
     '-t',
     '--target',
-    required=True,
-    help='Tox environment or make target (e.g. unit, lint).',
+    required=False,
+    default=None,
+    help='Tox environment or make target (e.g. unit, lint). Required when no subcommand is given.',
 )
 @click.option(
     '--runner',
@@ -192,10 +196,17 @@ def _select_repos(
     default=False,
     help='Exit non-zero if any charm failed, timed out, or hit a patcher error.',
 )
+@click.option(
+    '--save-results',
+    type=click.Path(dir_okay=False, path_type=pathlib.Path),
+    default=None,
+    help='Save run results to a JSON file for later use with `hyrum compare`.',
+)
 def main(
-    cache_folder: pathlib.Path,
+    ctx: click.Context,
+    cache_folder: pathlib.Path | None,
     config_path: pathlib.Path,
-    target: str,
+    target: str | None,
     runner_choice: str,
     repo: str,
     sample: int,
@@ -213,8 +224,17 @@ def main(
     log_level: str,
     verbose: bool,
     fail_on_regression: bool,
+    save_results: pathlib.Path | None,
 ) -> None:
-    """Run a check (typically lint or unit tests) across many charm repos."""
+    """Run a check across many charm repos, or use a subcommand (e.g. compare)."""
+    if ctx.invoked_subcommand is not None:
+        return
+
+    if cache_folder is None:
+        raise click.MissingParameter(param_hint='--cache-folder', param_type='option')
+    if target is None:
+        raise click.MissingParameter(param_hint="'-t' / '--target'", param_type='option')
+
     _configure_logging(log_level)
 
     cfg = config_loader.load(config_path)
@@ -242,13 +262,46 @@ def main(
         timeout=timeout,
     )
 
-    results: list[pool.Outcome] = asyncio.run(
+    run_results: list[pool.Outcome] = asyncio.run(
         pool.run_pool(repos, patcher=patcher, runner=runner, target=target, workers=workers)
     )
-    pool.add_skipped(results, skipped)
-    results.sort(key=lambda o: str(o.repo))
+    pool.add_skipped(run_results, skipped)
+    run_results.sort(key=lambda o: str(o.repo))
 
-    report.render(results, base=cache_folder, target=target, verbose=verbose)
+    report.render(run_results, base=cache_folder, target=target, verbose=verbose)
 
-    if fail_on_regression and not pool.passed(results):
+    if save_results is not None:
+        results_io.save(run_results, save_results)
+
+    if fail_on_regression and not pool.passed(run_results):
+        sys.exit(1)
+
+
+@main.command()
+@click.argument('baseline', type=click.Path(exists=True, dir_okay=False, path_type=pathlib.Path))
+@click.argument('current', type=click.Path(exists=True, dir_okay=False, path_type=pathlib.Path))
+@click.option(
+    '--fail-on-regression/--no-fail-on-regression',
+    default=False,
+    help='Exit non-zero if there are any new failures or new errors.',
+)
+def compare(
+    baseline: pathlib.Path,
+    current: pathlib.Path,
+    fail_on_regression: bool,
+) -> None:
+    """Compare two saved result files from previous hyrum runs."""
+    try:
+        baseline_outcomes = results_io.load(baseline)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    try:
+        current_outcomes = results_io.load(current)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    result = compare_mod.diff(baseline_outcomes, current_outcomes)
+    compare_mod.render(result)
+
+    if fail_on_regression and (result.new_failures or result.new_errors):
         sys.exit(1)
