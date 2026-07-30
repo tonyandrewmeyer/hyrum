@@ -93,6 +93,21 @@ def test_requirements_extras_from_tox_ini_hoist_companion(
     assert _read(req) == 'ops~=3.7\n'
 
 
+def test_requirements_bare_companion_declaration_hoisted(
+    tmp_path: pathlib.Path, ops_main: patchers.OpsSource
+):
+    # ops-scenario declared as its own line, not via ops[testing] -- still
+    # needs to be re-added as a direct git-sourced dep, or it silently
+    # disappears and the charm's tests can't import `scenario` at all.
+    req = tmp_path / 'requirements.txt'
+    req.write_text('ops\nops-scenario\n')
+    with patchers.OpsSourcePatcher(ops_main).apply(tmp_path):
+        patched = _read(req)
+        assert 'ops-scenario @ git+' in patched
+        assert 'subdirectory=testing' in patched
+    assert _read(req) == 'ops\nops-scenario\n'
+
+
 def test_requirements_no_tox_ini_no_extra_extras(
     tmp_path: pathlib.Path, ops_main: patchers.OpsSource
 ):
@@ -733,6 +748,60 @@ def test_pyproject_uv_path_emits_path_source(tmp_path: pathlib.Path, ops_path: p
 
 
 # ---- error paths -------------------------------------------------------------
+
+
+def test_poetry_install_in_tox_prefers_pyproject_over_requirements(
+    tmp_path: pathlib.Path, ops_main: patchers.OpsSource, monkeypatch
+):
+    # requirements.txt exists but is unused cruft: tox's unit env actually
+    # runs `poetry install`, so pyproject.toml/poetry.lock is what's really
+    # consulted -- patching requirements.txt here would be a silent no-op.
+    monkeypatch.setattr('hyrum._patchers.ops_source.run_lock', lambda *a, **kw: None)
+    (tmp_path / 'requirements.txt').write_text('ops==2.5.1\n')
+    (tmp_path / 'tox.ini').write_text(
+        textwrap.dedent("""\
+        [testenv:unit]
+        commands =
+            poetry install --with unit
+            poetry run pytest
+        """)
+    )
+    py = tmp_path / 'pyproject.toml'
+    py.write_text(
+        textwrap.dedent("""\
+        [tool.poetry]
+        name = "c"
+        version = "0"
+
+        [tool.poetry.dependencies]
+        ops = ">=2.10.0"
+    """)
+    )
+    with patchers.OpsSourcePatcher(ops_main).apply(tmp_path):
+        assert 'git = "https://github.com/canonical/operator"' in _read(py)
+        assert _read(tmp_path / 'requirements.txt') == 'ops==2.5.1\n'
+
+
+def test_no_poetry_install_in_tox_keeps_requirements_authoritative(
+    tmp_path: pathlib.Path, ops_main: patchers.OpsSource
+):
+    # Both files exist, but tox never runs `poetry install` (e.g. it does
+    # `-r requirements.txt`) -- requirements.txt stays authoritative even
+    # though a pyproject.toml/lockfile happens to be present too.
+    req = tmp_path / 'requirements.txt'
+    req.write_text('ops==2.5.1\n')
+    (tmp_path / 'tox.ini').write_text(
+        textwrap.dedent("""\
+        [testenv:unit]
+        deps =
+            -r requirements.txt
+        commands =
+            pytest
+        """)
+    )
+    (tmp_path / 'pyproject.toml').write_text('[tool.poetry]\nname = "c"\nversion = "0"\n')
+    with patchers.OpsSourcePatcher(ops_main).apply(tmp_path):
+        assert 'git+https://github.com/canonical/operator' in _read(req)
 
 
 def test_no_requirements_or_pyproject_raises(tmp_path: pathlib.Path, ops_main: patchers.OpsSource):

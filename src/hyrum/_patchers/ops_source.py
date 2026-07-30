@@ -52,6 +52,10 @@ _COMPANION_PACKAGES: dict[str, tuple[str, str]] = {
     'tracing': ('ops-tracing', 'tracing'),
 }
 
+_COMPANION_PKG_TO_EXTRA: dict[str, str] = {
+    pkg: extra for extra, (pkg, _) in _COMPANION_PACKAGES.items()
+}
+
 
 @dataclasses.dataclass(frozen=True)
 class OpsSource:
@@ -176,7 +180,13 @@ class OpsSourcePatcher:
         requirements = repo / 'requirements.txt'
         pyproject = repo / 'pyproject.toml'
 
-        if requirements.exists():
+        # A charm can carry both a requirements.txt and a Poetry-managed
+        # pyproject.toml at once (a stale requirements.txt left over from a
+        # previous packaging scheme, unused by the actual unit env). When
+        # tox really runs `poetry install`, requirements.txt is never
+        # consulted -- patching it is a silent no-op that reports a false
+        # "pass" against the charm's original pinned ops.
+        if requirements.exists() and not (pyproject.exists() and _tox_uses_poetry_install(repo)):
             yield from self._apply_requirements(repo, requirements)
         elif pyproject.exists():
             yield from self._apply_pyproject(repo, pyproject)
@@ -321,6 +331,26 @@ def _ops_extras_from_tox_ini(repo: pathlib.Path) -> frozenset[str]:
     return frozenset(extras)
 
 
+_POETRY_INSTALL_RE = re.compile(r'\bpoetry\s+install\b')
+
+
+def _tox_uses_poetry_install(repo: pathlib.Path) -> bool:
+    """Whether the charm's tox.ini invokes ``poetry install`` anywhere.
+
+    A charm can carry both a ``requirements.txt`` and a Poetry-managed
+    ``pyproject.toml``/``poetry.lock`` at once -- a stale requirements.txt
+    left over from a previous packaging scheme, unused by the actual unit
+    env. When tox really runs ``poetry install``, dependency resolution
+    genuinely goes through pyproject.toml; patching requirements.txt in
+    that case is a silent no-op that reports a false "pass" against the
+    charm's original pinned ops.
+    """
+    tox_ini = repo / 'tox.ini'
+    if not tox_ini.exists():
+        return False
+    return bool(_POETRY_INSTALL_RE.search(tox_ini.read_text()))
+
+
 def _patch_requirements_file(
     path: pathlib.Path, ops: OpsSource, *, extra_extras: frozenset[str] = frozenset()
 ) -> None:
@@ -362,10 +392,13 @@ def _patch_requirements_file(
             ops_extras.update(req.extras)
             continue
         # Drop companion packages only when we'll re-add them from the
-        # patched source below; for PyPI mode they resolve normally.
-        if ops.overrides_companions() and req.name in {
-            pkg for pkg, _ in _COMPANION_PACKAGES.values()
-        }:
+        # patched source below; for PyPI mode they resolve normally. A bare
+        # ``ops-scenario``/``ops-tracing`` line (declared on its own, not
+        # via ``ops[extra]``) is itself evidence the companion is wanted --
+        # record the matching extra so it gets re-added below, or dropping
+        # this line would silently remove the charm's only declaration of it.
+        if ops.overrides_companions() and req.name in _COMPANION_PKG_TO_EXTRA:
+            ops_extras.add(_COMPANION_PKG_TO_EXTRA[req.name])
             continue
         kept.append(raw)
 
