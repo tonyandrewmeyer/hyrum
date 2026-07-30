@@ -782,6 +782,46 @@ def test_poetry_install_in_tox_prefers_pyproject_over_requirements(
         assert _read(tmp_path / 'requirements.txt') == 'ops==2.5.1\n'
 
 
+def test_uv_dependency_groups_in_tox_prefers_pyproject_over_requirements(
+    tmp_path: pathlib.Path, ops_main: patchers.OpsSource, monkeypatch
+):
+    # Same false-negative shape as the poetry case, but for tox-uv's own
+    # lock-based dependency resolution (`runner = uv-venv-lock-runner` +
+    # `dependency_groups = ...`), which reads pyproject.toml/uv.lock
+    # directly and never touches requirements.txt either.
+    monkeypatch.setattr('hyrum._patchers.ops_source.run_lock', lambda *a, **kw: None)
+    (tmp_path / 'requirements.txt').write_text('ops==2.5.1\n')
+    (tmp_path / 'tox.ini').write_text(
+        textwrap.dedent("""\
+        [testenv:unit]
+        runner = uv-venv-lock-runner
+        dependency_groups =
+            unit
+        commands =
+            pytest
+        """)
+    )
+    py = tmp_path / 'pyproject.toml'
+    py.write_text(
+        textwrap.dedent("""\
+        [project]
+        name = "c"
+        version = "0"
+        requires-python = ">=3.10"
+        dependencies = [
+          "ops>=2.10",
+        ]
+
+        [tool.uv]
+    """)
+    )
+    (tmp_path / 'uv.lock').write_text('# original\n')
+    with patchers.OpsSourcePatcher(ops_main).apply(tmp_path):
+        assert '[tool.uv.sources]' in _read(py)
+        assert 'ops = { git = "https://github.com/canonical/operator" }' in _read(py)
+        assert _read(tmp_path / 'requirements.txt') == 'ops==2.5.1\n'
+
+
 def test_no_poetry_install_in_tox_keeps_requirements_authoritative(
     tmp_path: pathlib.Path, ops_main: patchers.OpsSource
 ):

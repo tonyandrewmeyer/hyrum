@@ -186,7 +186,9 @@ class OpsSourcePatcher:
         # tox really runs `poetry install`, requirements.txt is never
         # consulted -- patching it is a silent no-op that reports a false
         # "pass" against the charm's original pinned ops.
-        if requirements.exists() and not (pyproject.exists() and _tox_uses_poetry_install(repo)):
+        if requirements.exists() and not (
+            pyproject.exists() and _tox_bypasses_requirements_txt(repo)
+        ):
             yield from self._apply_requirements(repo, requirements)
         elif pyproject.exists():
             yield from self._apply_pyproject(repo, pyproject)
@@ -332,23 +334,32 @@ def _ops_extras_from_tox_ini(repo: pathlib.Path) -> frozenset[str]:
 
 
 _POETRY_INSTALL_RE = re.compile(r'\bpoetry\s+install\b')
+_UV_LOCK_RUNNER_RE = re.compile(r'\bdependency_groups\s*=|runner\s*=\s*uv-venv-lock-runner\b')
 
 
-def _tox_uses_poetry_install(repo: pathlib.Path) -> bool:
-    """Whether the charm's tox.ini invokes ``poetry install`` anywhere.
+def _tox_bypasses_requirements_txt(repo: pathlib.Path) -> bool:
+    """Whether the charm's tox.ini resolves deps from pyproject.toml, not requirements.txt.
 
-    A charm can carry both a ``requirements.txt`` and a Poetry-managed
-    ``pyproject.toml``/``poetry.lock`` at once -- a stale requirements.txt
-    left over from a previous packaging scheme, unused by the actual unit
-    env. When tox really runs ``poetry install``, dependency resolution
-    genuinely goes through pyproject.toml; patching requirements.txt in
-    that case is a silent no-op that reports a false "pass" against the
-    charm's original pinned ops.
+    A charm can carry both a ``requirements.txt`` and a Poetry- or
+    uv-managed ``pyproject.toml`` at once -- a stale requirements.txt left
+    over from a previous packaging scheme, unused by the actual unit env.
+    Two tox patterns mean pyproject.toml is what's really consulted:
+
+    - ``poetry install`` as a literal command (Poetry resolves from
+      pyproject.toml/poetry.lock, never touching requirements.txt).
+    - tox-uv's native lock-based dependency resolution (``dependency_groups
+      = ...`` or ``runner = uv-venv-lock-runner``), which reads
+      pyproject.toml's ``[dependency-groups]``/``uv.lock`` directly.
+
+    In either case, patching requirements.txt is a silent no-op: the charm
+    reports a false "pass" against its original pinned ops instead of the
+    patched dev branch.
     """
     tox_ini = repo / 'tox.ini'
     if not tox_ini.exists():
         return False
-    return bool(_POETRY_INSTALL_RE.search(tox_ini.read_text()))
+    text = tox_ini.read_text()
+    return bool(_POETRY_INSTALL_RE.search(text) or _UV_LOCK_RUNNER_RE.search(text))
 
 
 def _patch_requirements_file(
