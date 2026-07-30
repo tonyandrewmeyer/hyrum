@@ -196,9 +196,10 @@ class OpsSourcePatcher:
             if sibling in snapshots:
                 continue
             snapshots[sibling] = sibling.read_text()
+        extra_extras = _ops_extras_from_tox_ini(repo)
         try:
             for path in snapshots:
-                _patch_requirements_file(path, self.ops)
+                _patch_requirements_file(path, self.ops, extra_extras=extra_extras)
             yield
         finally:
             for path, original in snapshots.items():
@@ -235,8 +236,16 @@ class OpsSourcePatcher:
             elif flavour == 'pep621':
                 new_text = _patch_pyproject_pep621(original_text, self.ops, ops_extras)
             else:
-                raise base.PatcherError(
-                    f'{pyproject} has no recognisable [project] or [tool.poetry] deps'
+                # No [project] or [tool.poetry] table at all -- typically a
+                # charm-library repo whose pyproject.toml only carries tool
+                # config (coverage/pytest/lint settings). There's nowhere to
+                # declare ops, so there's nothing to patch, not a malformed
+                # or unexpected file -- treat it like "ops isn't a
+                # dependency here" rather than a hard error.
+                raise base.PatcherSkip(
+                    base.PatcherSkipReason.DEP_NOT_DECLARED,
+                    f'{pyproject} has no [project] or [tool.poetry] table '
+                    f'— ops is not a declared dependency',
                 )
 
             pyproject.write_text(new_text)
@@ -288,16 +297,44 @@ def _ops_extras_from_pep508_line(line: str) -> set[str]:
     return set(req.extras)
 
 
-def _patch_requirements_file(path: pathlib.Path, ops: OpsSource) -> None:
+_TOX_OPS_EXTRAS_RE = re.compile(r'\bops\[([^\]]+)\]')
+
+
+def _ops_extras_from_tox_ini(repo: pathlib.Path) -> frozenset[str]:
+    """Extras declared on an inline ``ops[...]`` entry in the charm's tox.ini.
+
+    Some charms pin ``ops`` bare in requirements.txt but only add extras via
+    tox's own ``deps =`` list, e.g. ``ops[testing] ~= 3.7`` alongside
+    ``-r requirements.txt``. Scanning requirements.txt alone then misses the
+    extra, so the companion package (``ops-scenario`` / ``ops-tracing``)
+    never gets hoisted into the patched requirements file as a direct git
+    source — and uv's strict resolver then refuses the resulting transitive
+    URL dependency with "URL dependencies must be expressed as direct
+    requirements".
+    """
+    tox_ini = repo / 'tox.ini'
+    if not tox_ini.exists():
+        return frozenset()
+    extras: set[str] = set()
+    for match in _TOX_OPS_EXTRAS_RE.finditer(tox_ini.read_text()):
+        extras.update(e.strip() for e in match.group(1).split(',') if e.strip())
+    return frozenset(extras)
+
+
+def _patch_requirements_file(
+    path: pathlib.Path, ops: OpsSource, *, extra_extras: frozenset[str] = frozenset()
+) -> None:
     """Rewrite a pip-style requirements file in place.
 
     Removes any existing ``ops`` line, retains any other git-source
     line, and appends ``ops`` (with discovered extras) from ``ops``'s
     git URL. Companion packages for active extras are also appended.
+    ``extra_extras`` seeds extras discovered outside this file (see
+    :func:`_ops_extras_from_tox_ini`).
     """
     original_lines = path.read_text().splitlines()
     kept: list[str] = []
-    ops_extras: set[str] = set()
+    ops_extras: set[str] = set(extra_extras)
 
     for raw in original_lines:
         line = raw.split('#', 1)[0].strip()

@@ -69,6 +69,41 @@ def test_requirements_ops_extras_propagate(tmp_path: pathlib.Path, ops_main: pat
         assert 'subdirectory=tracing' in patched
 
 
+def test_requirements_extras_from_tox_ini_hoist_companion(
+    tmp_path: pathlib.Path, ops_main: patchers.OpsSource
+):
+    # requirements.txt pins ops bare; the [testing] extra only shows up in
+    # tox.ini's inline deps -- companion still needs to be hoisted so uv
+    # doesn't choke on an undeclared transitive URL dependency.
+    req = tmp_path / 'requirements.txt'
+    req.write_text('ops~=3.7\n')
+    (tmp_path / 'tox.ini').write_text(
+        textwrap.dedent("""\
+        [testenv:unit]
+        deps =
+            ops[testing] ~= 3.7
+            -r requirements.txt
+        """)
+    )
+    with patchers.OpsSourcePatcher(ops_main).apply(tmp_path):
+        patched = _read(req)
+        assert 'ops[testing] @ git+' in patched
+        assert 'ops-scenario @ git+' in patched
+        assert 'subdirectory=testing' in patched
+    assert _read(req) == 'ops~=3.7\n'
+
+
+def test_requirements_no_tox_ini_no_extra_extras(
+    tmp_path: pathlib.Path, ops_main: patchers.OpsSource
+):
+    req = tmp_path / 'requirements.txt'
+    req.write_text('ops~=3.7\n')
+    with patchers.OpsSourcePatcher(ops_main).apply(tmp_path):
+        patched = _read(req)
+        assert 'ops @ git+' in patched
+        assert 'ops-scenario' not in patched
+
+
 def test_requirements_sibling_files_patched(tmp_path: pathlib.Path, ops_main: patchers.OpsSource):
     (tmp_path / 'requirements.txt').write_text('ops>=2.10\n')
     sibling = tmp_path / 'requirements-unit.txt'
@@ -708,13 +743,18 @@ def test_no_requirements_or_pyproject_raises(tmp_path: pathlib.Path, ops_main: p
         pass
 
 
-def test_unrecognised_pyproject_raises(tmp_path: pathlib.Path, ops_main: patchers.OpsSource):
-    (tmp_path / 'pyproject.toml').write_text('[build-system]\nrequires = []\n')
+def test_unrecognised_pyproject_skips(tmp_path: pathlib.Path, ops_main: patchers.OpsSource):
+    # No [project] or [tool.poetry] table: typically a charm-library repo
+    # whose pyproject.toml only carries tool config. Nowhere to declare
+    # ops, so this is "not a dependency here", not a hard patcher error.
+    py = tmp_path / 'pyproject.toml'
+    py.write_text('[build-system]\nrequires = []\n')
     with (
-        pytest.raises(patchers.PatcherError),
+        pytest.raises(patchers.PatcherSkip, match='not a declared dependency'),
         patchers.OpsSourcePatcher(ops_main).apply(tmp_path),
     ):
         pass
+    assert _read(py) == '[build-system]\nrequires = []\n'
 
 
 def test_lockfile_snapshots_restored(
