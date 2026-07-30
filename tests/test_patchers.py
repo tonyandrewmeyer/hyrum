@@ -214,6 +214,30 @@ def test_pyproject_pep621_keywords_ops_not_rewritten(
         assert '"ops==2.10"' not in patched
 
 
+def test_pyproject_pep621_dotted_namesake_not_rewritten(
+    tmp_path: pathlib.Path, ops_branch: patchers.OpsSource
+):
+    """``ops.manifest`` is a distinct PyPI package, not a longer spelling of ``ops``."""
+    py = tmp_path / 'pyproject.toml'
+    py.write_text(
+        textwrap.dedent("""\
+        [project]
+        name = "c"
+        version = "0"
+        dependencies = [
+          "ops",
+          "ops.manifest",
+        ]
+    """)
+    )
+    with patchers.OpsSourcePatcher(ops_branch).apply(tmp_path):
+        patched = _read(py)
+        # The unrelated dotted package survives untouched.
+        assert '"ops.manifest"' in patched
+        # The real ops dep was rewritten.
+        assert '"ops @ git+https://github.com/canonical/operator@fix/X"' in patched
+
+
 # ---- pyproject.toml: uv ------------------------------------------------------
 
 

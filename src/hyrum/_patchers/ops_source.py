@@ -457,12 +457,15 @@ def _strip_companion_declarations(content: str, pkg_name: str) -> str:
 # constrains the match to a spot where TOML actually expects an array element
 # — closing quote followed by a comma or array-close — so config values that
 # just happen to be ``"ops"`` (like ``keywords = ["ops"]``) are skipped unless
-# we're already inside a dep section.
+# we're already inside a dep section. The negative lookahead excludes ``.``
+# as well as name/hyphen characters: without it, an unrelated package like
+# ``ops.manifest`` (a real PyPI name, distinct from ``ops``) gets misread as
+# a longer spelling of ``ops`` and clobbered by the rewrite.
 _OPS_PEP508_RE = re.compile(
     r"""
     "               # opening quote of the array element
     \s* ops         # the package name (TOML allows leading whitespace in the string)
-    (?![\w-])       # not followed by a name char: excludes ops-scenario, ops_helper, ...
+    (?![\w.-])      # not followed by a name char: excludes ops-scenario, ops_helper, ops.manifest
     (\[[^\]"]*\])?  # capture the optional extras, e.g. [testing]
     [^"]*           # rest of the spec: version, marker, URL, ...
     "               # closing quote
@@ -472,15 +475,15 @@ _OPS_PEP508_RE = re.compile(
 )
 _OPS_SCENARIO_PEP508_RE = re.compile(
     r"""
-    "  \s* ops-scenario (?![\w-])  # the package name, not a longer namesake
-    [^"]*  "                       # rest of the spec, then closing quote
-    (?= \s* [,\]] )                # array-element context
+    "  \s* ops-scenario (?![\w.-])  # the package name, not a longer namesake
+    [^"]*  "                        # rest of the spec, then closing quote
+    (?= \s* [,\]] )                 # array-element context
     """,
     re.VERBOSE,
 )
 _OPS_TRACING_PEP508_RE = re.compile(
     r"""
-    "  \s* ops-tracing (?![\w-])
+    "  \s* ops-tracing (?![\w.-])
     [^"]*  "
     (?= \s* [,\]] )
     """,
