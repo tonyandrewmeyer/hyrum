@@ -1034,6 +1034,37 @@ def test_uv_lock_unpinned_when_no_python_constraint(tmp_path: pathlib.Path, monk
     assert captured['cmd'] == ('uv', 'lock')
 
 
+def test_uv_lock_removed_on_relock_failure(tmp_path: pathlib.Path, monkeypatch):
+    # Regression: the poetry branch passes on_failure_remove=poetry_lock so a
+    # failed relock deletes the stale lockfile and the runner installs
+    # without it; the uv branch didn't, leaving a stale uv.lock behind that
+    # then hard-fails `uv sync --locked`/`--frozen` in the charm's tox env
+    # with an unrelated-looking "lockfile needs to be updated" error.
+    def fake_lock(repo, cmd, timeout, *, on_failure_remove=None):
+        assert on_failure_remove == repo / 'uv.lock'
+        on_failure_remove.unlink()
+
+    monkeypatch.setattr('hyrum._patchers.ops_source.run_lock', fake_lock)
+    py = tmp_path / 'pyproject.toml'
+    py.write_text(
+        textwrap.dedent("""\
+        [project]
+        name = "c"
+        version = "0"
+        dependencies = [
+          "ops>=2.10",
+        ]
+
+        [tool.uv]
+    """)
+    )
+    (tmp_path / 'uv.lock').write_text('# original\n')
+    with patchers.OpsSourcePatcher(patchers.OpsSource(branch='b')).apply(tmp_path):
+        assert not (tmp_path / 'uv.lock').exists()
+    # Restored on exit like any other snapshotted file.
+    assert _read(tmp_path / 'uv.lock') == '# original\n'
+
+
 def test_run_lock_strips_virtual_env(tmp_path: pathlib.Path, monkeypatch):
     # Regression: hyrum's own VIRTUAL_ENV (e.g. when invoked via ``uv run``)
     # leaked into the lock subprocess. Poetry then reported "Current Python
@@ -1230,6 +1261,28 @@ def test_charmlib_patcher_uv_extras_reapplied(tmp_path: pathlib.Path, monkeypatc
         assert 'charmlibs-nginx-k8s = { git = "https://github.com/canonical/charmlibs"' in patched
         assert 'branch = "mybranch"' in patched
         assert 'subdirectory = "nginx_k8s"' in patched
+
+
+def test_charmlib_uv_lock_removed_on_relock_failure(tmp_path: pathlib.Path, monkeypatch):
+    # Same gap as OpsSourcePatcher: the uv branch didn't pass
+    # on_failure_remove, unlike the poetry branch right next to it.
+    def fake_lock(repo, cmd, timeout, *, on_failure_remove=None):
+        assert on_failure_remove == repo / 'uv.lock'
+        on_failure_remove.unlink()
+
+    monkeypatch.setattr('hyrum._patchers.charmlib_source.run_lock', fake_lock)
+    charm_dir = tmp_path / 'charm'
+    charm_dir.mkdir()
+    (charm_dir / 'pyproject.toml').write_text(
+        '[project]\nname = "c"\nversion = "0"\n'
+        'dependencies = [\n  "charmlibs-nginx-k8s>=1.0",\n]\n'
+        '[tool.uv]\ndev-dependencies = []\n'
+    )
+    (charm_dir / 'uv.lock').write_text('# original\n')
+    src = patchers.CharmlibSource(pkg_name='nginx_k8s', branch='mybranch')
+    with patchers.CharmlibPatcher(src).apply(charm_dir):
+        assert not (charm_dir / 'uv.lock').exists()
+    assert _read(charm_dir / 'uv.lock') == '# original\n'
 
 
 # ---- CharmlibPatcher: git dep rewriting via shared _patch_git_dep helper ----

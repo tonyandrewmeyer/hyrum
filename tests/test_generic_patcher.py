@@ -136,6 +136,25 @@ def test_uv_git_adds_source_block(tmp_path: pathlib.Path, monkeypatch):
         assert 'requests = { git = "https://github.com/psf/requests", branch = "main" }' in patched
 
 
+def test_uv_lock_removed_on_relock_failure(tmp_path: pathlib.Path, monkeypatch):
+    # Same gap as OpsSourcePatcher/CharmlibPatcher: the uv branch didn't
+    # pass on_failure_remove, unlike the poetry branch right next to it.
+    def fake_lock(repo, cmd, timeout, *, on_failure_remove=None):
+        assert on_failure_remove == repo / 'uv.lock'
+        on_failure_remove.unlink()
+
+    monkeypatch.setattr('hyrum._patchers.generic.run_lock', fake_lock)
+    py = tmp_path / 'pyproject.toml'
+    (tmp_path / 'uv.lock').write_text('# original\n')
+    py.write_text(_UV_TEMPLATE)
+    source = patchers.DepSource(
+        pkg_name='requests', url='https://github.com/psf/requests', branch='main'
+    )
+    with patchers.GenericDepPatcher(source).apply(tmp_path):
+        assert not (tmp_path / 'uv.lock').exists()
+    assert _read(tmp_path / 'uv.lock') == '# original\n'
+
+
 # ---- poetry path -------------------------------------------------------------
 
 

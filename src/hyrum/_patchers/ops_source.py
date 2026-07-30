@@ -270,6 +270,7 @@ class OpsSourcePatcher:
                     repo,
                     uv_cmd,
                     self.ops.lock_timeout,
+                    on_failure_remove=uv_lock,
                 )
 
             yield
