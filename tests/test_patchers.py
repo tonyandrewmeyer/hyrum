@@ -1087,6 +1087,119 @@ def test_lockfile_created_during_patch_is_removed_on_exit(
     assert not (tmp_path / 'uv.lock').exists()
 
 
+def test_uv_lock_removed_when_lock_regeneration_fails(
+    tmp_path: pathlib.Path, ops_branch: patchers.OpsSource, monkeypatch
+):
+    # Regression: a failed ``uv lock`` (e.g. a transient network error while
+    # fetching a locked sdist) used to leave the stale, now-mismatched
+    # ``uv.lock`` in place. A charm whose runner calls ``uv sync --locked``
+    # then fails with a confusing "lockfile needs to be updated" error,
+    # misattributing hyrum's own lock-regeneration failure to the charm. The
+    # poetry path already deletes a lockfile it failed to regenerate
+    # (``on_failure_remove=poetry_lock``); the ops uv path did not.
+    class _Result:
+        returncode = 1
+        stdout = b''
+        stderr = b'error: lock failed\n'
+
+    monkeypatch.setattr('hyrum._patchers._common.subprocess.run', lambda *a, **kw: _Result())
+    py = tmp_path / 'pyproject.toml'
+    py.write_text(
+        textwrap.dedent("""\
+        [project]
+        name = "c"
+        version = "0"
+        requires-python = ">=3.10"
+        dependencies = [
+          "ops>=2.10",
+        ]
+
+        [tool.uv]
+    """)
+    )
+    (tmp_path / 'uv.lock').write_text('# original\n')
+    with patchers.OpsSourcePatcher(ops_branch).apply(tmp_path):
+        assert not (tmp_path / 'uv.lock').exists()
+
+
+# ---- detect_pyproject_flavour: vestigial [tool.poetry] table -----------------
+
+
+def test_flavour_ignores_poetry_table_with_no_dependencies():
+    # A [tool.poetry] table containing only tooling config (most commonly
+    # `package-mode = false`, used to opt a PEP 621 project out of Poetry's
+    # own build/publish machinery) declares no dependency of its own. It
+    # must not be classified as poetry-flavour: the poetry rewriter would
+    # then strip the PEP 621 declaration it finds (its strip step doesn't
+    # care which table a line lives in) and have no `[tool.poetry.*]` table
+    # to reinsert into, silently deleting the dependency instead of
+    # patching it.
+    parsed = tomllib.loads(
+        textwrap.dedent("""\
+        [project]
+        name = "c"
+        dependencies = ["ops>=2.10"]
+
+        [tool.poetry]
+        package-mode = false
+    """)
+    )
+    assert _common.detect_pyproject_flavour(parsed, uv_lock_present=False) == 'pep621'
+
+
+def test_flavour_still_poetry_when_deps_declared_in_a_group():
+    # A [tool.poetry] table with no base [tool.poetry.dependencies] but a
+    # real named-group dependency table is genuinely poetry-managed.
+    parsed = tomllib.loads(
+        textwrap.dedent("""\
+        [tool.poetry]
+        name = "c"
+        package-mode = false
+
+        [tool.poetry.group.unit.dependencies]
+        ops = "^2.10"
+    """)
+    )
+    assert _common.detect_pyproject_flavour(parsed, uv_lock_present=False) == 'poetry'
+
+
+def test_pyproject_pep621_deps_not_dropped_by_vestigial_poetry_table(
+    tmp_path: pathlib.Path, ops_main: patchers.OpsSource, monkeypatch
+):
+    # End-to-end regression for the flavour misdetection above: ops must
+    # land in [project.dependencies], not vanish.
+    monkeypatch.setattr('hyrum._patchers.ops_source.run_lock', lambda *a, **kw: None)
+    py = tmp_path / 'pyproject.toml'
+    py.write_text(
+        textwrap.dedent("""\
+        [project]
+        name = "c"
+        version = "1.0"
+        requires-python = ">=3.12"
+        dependencies = [
+            "ops>=3.5.1",
+            "requests",
+        ]
+
+        [project.optional-dependencies]
+        dev = [
+            "ops[testing]",
+            "pytest",
+        ]
+
+        [tool.poetry]
+        package-mode = false
+    """)
+    )
+    with patchers.OpsSourcePatcher(ops_main).apply(tmp_path):
+        patched = _read(py)
+        assert 'ops @ git+https://github.com/canonical/operator' in patched
+        assert 'ops[testing] @ git+https://github.com/canonical/operator' in patched
+        # Untouched deps survive.
+        assert '"requests"' in patched
+        assert '"pytest"' in patched
+
+
 # ---- CharmlibSource: name parsing / subdir derivation ------------------------
 
 
@@ -1230,6 +1343,31 @@ def test_charmlib_patcher_uv_extras_reapplied(tmp_path: pathlib.Path, monkeypatc
         assert 'charmlibs-nginx-k8s = { git = "https://github.com/canonical/charmlibs"' in patched
         assert 'branch = "mybranch"' in patched
         assert 'subdirectory = "nginx_k8s"' in patched
+
+
+def test_charmlib_patcher_uv_lock_removed_when_lock_regeneration_fails(
+    tmp_path: pathlib.Path, monkeypatch
+):
+    # Same regression as the OpsSourcePatcher/GenericDepPatcher case: a
+    # failed ``uv lock`` must not leave a stale lockfile behind for the
+    # runner's ``uv sync --locked`` to trip over.
+    class _Result:
+        returncode = 1
+        stdout = b''
+        stderr = b'error: lock failed\n'
+
+    monkeypatch.setattr('hyrum._patchers._common.subprocess.run', lambda *a, **kw: _Result())
+    charm_dir = tmp_path / 'charm'
+    charm_dir.mkdir()
+    (charm_dir / 'pyproject.toml').write_text(
+        '[project]\nname = "c"\nversion = "0"\nrequires-python = ">=3.10"\n'
+        'dependencies = [\n  "charmlibs-nginx-k8s>=1.0",\n]\n'
+        '[tool.uv]\ndev-dependencies = []\n'
+    )
+    (charm_dir / 'uv.lock').write_text('# original\n')
+    src = patchers.CharmlibSource(pkg_name='nginx_k8s', branch='mybranch')
+    with patchers.CharmlibPatcher(src).apply(charm_dir):
+        assert not (charm_dir / 'uv.lock').exists()
 
 
 # ---- CharmlibPatcher: git dep rewriting via shared _patch_git_dep helper ----

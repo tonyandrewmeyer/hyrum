@@ -217,11 +217,40 @@ def detect_pyproject_flavour(parsed: dict[str, Any], uv_lock_present: bool) -> s
     )
     if has_pep621_deps and (uv_lock_present or 'uv' in parsed.get('tool', {})):
         return 'uv'
-    if 'poetry' in parsed.get('tool', {}):
+    poetry = parsed.get('tool', {}).get('poetry', {})
+    if isinstance(poetry, dict) and _has_poetry_deps_table(poetry):
         return 'poetry'
     if has_pep621_deps or has_project_table:
         return 'pep621'
     return 'unknown'
+
+
+def _has_poetry_deps_table(poetry: dict[str, Any]) -> bool:
+    """Whether the parsed ``[tool.poetry]`` table declares any dependencies.
+
+    ``[tool.poetry]`` can be present purely for tooling config — most
+    commonly ``package-mode = false`` on a project whose real dependencies
+    live in PEP 621 ``[project.dependencies]`` — without ever declaring a
+    dependency of its own. Treating that as poetry-flavour is worse than a
+    misdetection: the poetry rewriter strips the PEP 621 declaration it finds
+    (its strip step is table-agnostic) and then has nowhere to reinsert it,
+    since none of ``[tool.poetry.dependencies]`` or any
+    ``[tool.poetry.group.*.dependencies]`` exists to anchor on — silently
+    deleting the dependency instead of patching it.
+    """
+    for section in ('dependencies', 'dev-dependencies'):
+        deps = poetry.get(section)
+        if isinstance(deps, dict) and deps:
+            return True
+    groups = poetry.get('group', {})
+    if isinstance(groups, dict):
+        for group in groups.values():
+            if not isinstance(group, dict):
+                continue
+            deps = group.get('dependencies')
+            if isinstance(deps, dict) and deps:
+                return True
+    return False
 
 
 def _extras_str(extras: Sequence[str]) -> str:
