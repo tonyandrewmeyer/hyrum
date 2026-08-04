@@ -165,6 +165,7 @@ class GenericDepPatcher:
                     repo,
                     (*self.source.uv_executable, 'lock'),
                     self.source.lock_timeout,
+                    on_failure_remove=uv_lock,
                 )
 
             yield

@@ -136,6 +136,30 @@ def test_uv_git_adds_source_block(tmp_path: pathlib.Path, monkeypatch):
         assert 'requests = { git = "https://github.com/psf/requests", branch = "main" }' in patched
 
 
+def test_uv_lock_removed_when_lock_regeneration_fails(tmp_path: pathlib.Path, monkeypatch):
+    # Regression: a failed ``uv lock`` (e.g. a transient network error while
+    # fetching a locked sdist) used to leave the stale, now-mismatched
+    # ``uv.lock`` in place. A charm whose runner calls ``uv sync --locked``
+    # then fails with a confusing "lockfile needs to be updated" error,
+    # misattributing hyrum's own lock-regeneration failure to the charm. The
+    # poetry path already deletes a lockfile it failed to regenerate
+    # (``on_failure_remove=poetry_lock``); the uv path did not.
+    class _Result:
+        returncode = 1
+        stdout = b''
+        stderr = b'error: lock failed\n'
+
+    monkeypatch.setattr('hyrum._patchers._common.subprocess.run', lambda *a, **kw: _Result())
+    py = tmp_path / 'pyproject.toml'
+    py.write_text(_UV_TEMPLATE)
+    (tmp_path / 'uv.lock').write_text('# original\n')
+    source = patchers.DepSource(
+        pkg_name='requests', url='https://github.com/psf/requests', branch='main'
+    )
+    with patchers.GenericDepPatcher(source).apply(tmp_path):
+        assert not (tmp_path / 'uv.lock').exists()
+
+
 # ---- poetry path -------------------------------------------------------------
 
 
