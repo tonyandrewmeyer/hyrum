@@ -48,27 +48,33 @@ above.
 
 ## Architecture
 
-- Entry point: `hyrum.cli:main` — a Click group with two subcommands:
-  `check` (the core bulk-runner) and `get-charms` (clones/pulls every
-  repository listed in `charm-list/charms.csv` into the cache folder).
-- `enumerate` / `filters` / `frameworks` / `config` — repo selection. The
+- Entry point: `hyrum._cli:main` — an `argparse` CLI (no Click; the
+  dependency was dropped) with three subcommands: `check` (the core
+  bulk-runner), `compare` (diff two `--save-results` JSON runs), and
+  `get-charms` (clones/pulls every repository listed in
+  `charm-list/charms.csv` into the cache folder).
+- `_enumerate` / `_filters` / `_frameworks` / `_config` — repo selection. The
   `hyrum check` subcommand does not curate the charm collection; it
   expects a pre-populated cache folder. `hyrum get-charms` populates it.
-- `get_charms` — distributed cache-population subcommand: shallow-clones
+- `_get_charms` — distributed cache-population subcommand: shallow-clones
   or pulls every repository in the CSV concurrently via `asyncio`.
-- `patchers/` — `Patcher` protocol, `NullPatcher`, `PatcherStack`,
-  `OpsSourcePatcher`. The protocol is deliberately narrow so a future
-  charm-library patcher (vendored `lib/charms/…/v<n>/<file>.py` swapped from a
-  git source) can slot in without changes elsewhere.
-- `runners/` — `ToxRunner`, `MakeRunner`, `auto()` per-charm with fallback.
-  GNU make's missing-target ambiguity is handled by probing with
+- `src/hyrum/_patchers/` — `Patcher` protocol (one `apply()` context
+  manager), `NullPatcher`, `PatcherStack`, and four concrete patchers:
+  `OpsSourcePatcher` (the `ops` dependency), `GenericDepPatcher` (any other
+  PyPI/git/local dependency), `CharmlibPatcher` (a `charmlibs-*` package
+  from a branch of the canonical/charmlibs monorepo), `VendoredLibPatcher`
+  (a vendored `lib/charms/<author>/v<n>/<lib>.py` swapped for its PyPI
+  equivalent).
+- `src/hyrum/_runners/` — `ToxRunner`, `MakeRunner`, `auto()` per-charm with
+  fallback. GNU make's missing-target ambiguity is handled by probing with
   `make -nq` and falling back to stderr inspection.
-- `pool` — async worker pool, `Outcome` dataclass with `patcher_error` and
+- `_pool` — async worker pool, `Outcome` dataclass with `patcher_error` and
   `runner_error` as statuses distinct from `failed` (so infrastructure
   problems don't get mis-attributed to the charm). The `check` subcommand
   preflights `--patch` git refs and the runner executables before the pool
   starts, so a typo or a missing tool fails once, not once per charm.
-- `report` — Rich tally + verbose offender lists.
+- `_report` — tally + verbose offender lists, hand-rolled ANSI formatting
+  (`_ansi`); no Rich dependency.
 - `tools/` — stdlib-only maintenance scripts that are **not** shipped in the
   hyrum wheel. `tools/update_charm_list.py` refreshes
   `charm-list/charms.csv` from Charmhub. Keep additions stdlib-only so they
@@ -84,5 +90,6 @@ integration-test support.
   pair (see `tests/test_runners.py`) that monkeypatches
   `asyncio.create_subprocess_exec` — no real subprocesses are spawned in
   the unit suite.
-- The ops-source patcher's lockfile regeneration is monkeypatched out (the
-  `_run_lock` helper) so unit tests don't spawn `poetry` / `uv`.
+- The `ops_source`/`generic` patchers' lockfile regeneration is monkeypatched
+  out (the `run_lock` helper in `src/hyrum/_patchers/_common.py`) so unit
+  tests don't spawn `poetry` / `uv`.
