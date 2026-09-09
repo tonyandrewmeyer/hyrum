@@ -33,3 +33,6 @@ jobs:
         with:
           sarif_file: results.sarif
           category: zizmor
+
+      - name: Fail on findings
+        run: uv run --group lint -- zizmor .
