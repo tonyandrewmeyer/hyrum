@@ -1,3 +1,15 @@
+# 1.0.1 - 09 October 2026
+
+## Fixes
+
+* Unpin the uv relock's Python and report a failed relock as a patcher error ([#174](https://github.com/tonyandrewmeyer/hyrum/pull/174))
+* Patch ops in place in the PEP 508 arrays of Poetry charms ([#172](https://github.com/tonyandrewmeyer/hyrum/pull/172))
+
+## CI
+
+* Make releases with the propose and draft-release workflows
+* Fix the contributing link in the release PR and tidy the changelog
+
 # 1.0.0 - 03 October 2026
 
 ## Features
